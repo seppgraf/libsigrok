@@ -83,12 +83,27 @@ static const struct slogic_model support_models[] = {
     }
 };
 
-static const uint64_t samplerates[] = {
+static const uint64_t samplerates_lite_8[] = {
+    SR_MHZ(1),   SR_MHZ(2),   SR_MHZ(4),   SR_MHZ(5),
+    SR_MHZ(8),   SR_MHZ(10),  SR_MHZ(16),  SR_MHZ(20),
+    SR_MHZ(32),  SR_MHZ(36),  SR_MHZ(40),  SR_MHZ(64),
+    SR_MHZ(80),  SR_MHZ(120), SR_MHZ(128), SR_MHZ(144),
+    SR_MHZ(160),
+};
+
+static const uint64_t samplerates_basic_16[] = {
     SR_MHZ(5),   SR_MHZ(8),   SR_MHZ(10),  SR_MHZ(16),  
     SR_MHZ(20),  SR_MHZ(25),  SR_MHZ(32),  SR_MHZ(50),  
     SR_MHZ(80),  SR_MHZ(100), SR_MHZ(160), SR_MHZ(200), 
     SR_MHZ(400), SR_MHZ(800), SR_MHZ(1600),
 };
+
+// static const uint64_t samplerates[] = {
+//     SR_MHZ(5),   SR_MHZ(8),   SR_MHZ(10),  SR_MHZ(16),  
+//     SR_MHZ(20),  SR_MHZ(25),  SR_MHZ(32),  SR_MHZ(50),  
+//     SR_MHZ(80),  SR_MHZ(100), SR_MHZ(160), SR_MHZ(200), 
+//     SR_MHZ(400), SR_MHZ(800), SR_MHZ(1600),
+// };
 
 static const uint64_t buffersizes[] = {
     2, 4, 8, 16
@@ -298,6 +313,30 @@ static int config_get(uint32_t key, GVariant **data,
     return SR_OK;
 }
 
+static uint64_t get_max_allowed_samplerate(const struct dev_context *devc, size_t active_channels)
+{
+    if (!devc || !devc->model)
+        return SR_MHZ(32);
+
+    /* Slogic Lite 8 (PID 0x0300) Channel Scaling */
+    if (devc->model->pid == 0x0300) {
+        if (active_channels <= 2)
+            return SR_MHZ(160);
+        else if (active_channels <= 4)
+            return SR_MHZ(80);
+        else
+            return SR_MHZ(40);
+    }
+
+    /* Slogic Basic 16 U3 (PID 0x3031) Channel Scaling */
+    if (active_channels <= 4)
+        return SR_MHZ(800);
+    else if (active_channels <= 8)
+        return SR_MHZ(400);
+    else
+        return SR_MHZ(200);
+}
+
 static int config_set(uint32_t key, GVariant *data, const struct sr_dev_inst *sdi,
     const struct sr_channel_group *cg)
 {
@@ -326,20 +365,18 @@ static int config_set(uint32_t key, GVariant *data, const struct sr_dev_inst *sd
         if (active_channels == 0)
             active_channels = devc->model->max_samplechannel;
 
-        uint64_t max_allowed_rate;
-        if (active_channels <= 4)        max_allowed_rate = SR_MHZ(800);
-        else if (active_channels <= 8)   max_allowed_rate = SR_MHZ(400);
-        else                             max_allowed_rate = SR_MHZ(200);
+        uint64_t max_allowed_rate = get_max_allowed_samplerate(devc, active_channels);
 
         if (requested_rate > max_allowed_rate) {
-            sr_err("Requested rate %" PRIu64 " MHz exceeds hardware limit for %zu active channels.", 
-                   requested_rate / SR_MHZ(1), active_channels);
+            sr_err("Requested rate %" PRIu64 " MHz exceeds hardware limit for %s with %zu active channels.", 
+                   requested_rate / SR_MHZ(1), devc->model->name, active_channels);
             return SR_ERR_SAMPLERATE;
         }
 
         devc->cur_samplerate = requested_rate;
         devc->cur_samplechannel = active_channels; 
         return SR_OK;
+
     case SR_CONF_BUFFERSIZE:
         {
             uint64_t requested_channels = g_variant_get_uint64(data);
@@ -416,42 +453,43 @@ static int config_list(uint32_t key, GVariant **data, const struct sr_dev_inst *
     switch (key) {
     /* --- START OF IMPLEMENTED REPLACEMENT --- */
     case SR_CONF_SAMPLERATE:
-        if (!devc) {
-            /* If no device context exists yet, expose all supported samplerates */
-            *data = std_gvar_samplerates(samplerates, G_N_ELEMENTS(samplerates));
+        if (!devc || !devc->model) {
+            *data = std_gvar_samplerates(samplerates_basic_16, G_N_ELEMENTS(samplerates_basic_16));
             return SR_OK;
         }
 
-        /* Calculate how many channels are currently checked/enabled by the user */
+        const uint64_t *rates_array;
+        size_t rates_count;
+
+        if (devc->model->pid == 0x0300) {
+            rates_array = samplerates_lite_8;
+            rates_count = G_N_ELEMENTS(samplerates_lite_8);
+        } else {
+            rates_array = samplerates_basic_16;
+            rates_count = G_N_ELEMENTS(samplerates_basic_16);
+        }
+
         for (l = sdi->channels; l; l = l->next) {
             struct sr_channel *ch = l->data;
             if (ch->enabled && ch->type == SR_CHANNEL_LOGIC)
                 active_channels++;
         }
-        
-        /* Fallback if no channels are explicitly enabled yet */
         if (active_channels == 0)
             active_channels = devc->model->max_samplechannel;
 
-        /* Enforce dynamic bandwidth cap rules based on active channels */
-        uint64_t max_allowed_rate;
-        if (active_channels <= 4)       max_allowed_rate = SR_MHZ(800);
-        else if (active_channels <= 8)  max_allowed_rate = SR_MHZ(400);
-        else                            max_allowed_rate = SR_MHZ(200);
+        uint64_t max_rate = get_max_allowed_samplerate(devc, active_channels);
 
-        /* Filter the standard samplerates array up to the permitted cap */
-        for (num_samplerates = 0; num_samplerates < G_N_ELEMENTS(samplerates); num_samplerates++) {
-            if (samplerates[num_samplerates] > max_allowed_rate) {
+        for (num_samplerates = 0; num_samplerates < rates_count; num_samplerates++) {
+            if (rates_array[num_samplerates] > max_rate)
                 break; 
-            }
         }
 
         if (num_samplerates == 0)
             num_samplerates = 1;
 
-        *data = std_gvar_samplerates(samplerates, num_samplerates);
+        /* FIXED: Pass rates_array here instead of samplerates */
+        *data = std_gvar_samplerates(rates_array, num_samplerates);
         return SR_OK;
-    /* --- END OF IMPLEMENTED REPLACEMENT --- */
 
     case SR_CONF_TRIGGER_MATCH:
         *data = std_gvar_array_i32(trigger_matches, G_N_ELEMENTS(trigger_matches));
@@ -577,15 +615,26 @@ struct cmd_start_acquisition {
 
 static int slogic_lite_8_remote_run(const struct sr_dev_inst *sdi) {
     struct dev_context *devc = sdi->priv;
+    struct sr_usb_dev_inst *usb = sdi->conn;
+
+    /* Reset pipe halt state on the bulk IN endpoint before sending run command */
+    if (usb && usb->devhdl) {
+        libusb_clear_halt(usb->devhdl, devc->model->ep_in);
+    }
+
     const struct cmd_start_acquisition cmd_run = {
         .sample_rate = devc->cur_samplerate / SR_MHZ(1),
         .sample_channel = devc->cur_samplechannel,
     };
-    return slogic_usb_control_write(sdi, CMD_START, 0x0000, 0x0000, (uint8_t *)&cmd_run, sizeof(cmd_run), 500);
+
+    g_usleep(20000); /* 20ms settling delay for Lite 8 MCU */
+
+    return slogic_usb_control_write(sdi, CMD_START, 0x0000, 0x0000, (uint8_t *)&cmd_run, sizeof(cmd_run), 1000);
 }
 
 static int slogic_lite_8_remote_stop(const struct sr_dev_inst *sdi) {
-    (void)sdi;
+    uint8_t dummy = 0;
+    slogic_usb_control_write(sdi, CMD_STOP, 0x0000, 0x0000, &dummy, 1, 500);
     return SR_OK;
 }
 

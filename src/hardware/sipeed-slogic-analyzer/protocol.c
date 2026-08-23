@@ -228,7 +228,9 @@ SR_PRIV int sipeed_slogic_acquisition_start(const struct sr_dev_inst *sdi)
     drvc = sdi->driver->context;
     usb = sdi->conn;
     devc->num_samples = 0;
-    
+    /* DRAIN ENDPOINT BEFORE STARTING A NEW RUN */
+    clear_ep(sdi);
+
     if ((ret = devc->model->operation.remote_stop(sdi)) < 0) {
         sr_err("Unhandled `CMD_STOP`");
         return ret;
