@@ -293,7 +293,7 @@ std::map<std::string, Glib::VariantBase> hash_to_map_options(VALUE hash,
         throw sigrok::Error(SR_ERR_ARG);
 
     struct hash_to_map_options_params params = { options };
-    rb_hash_foreach(hash, (int (*)(ANYARGS))convert_option, (VALUE)&params);
+    rb_hash_foreach(hash, (int (*)(VALUE, VALUE, VALUE))convert_option, (VALUE)&params);
 
     return params.output;
 }
@@ -356,7 +356,7 @@ int convert_option_by_key(VALUE key, VALUE val, VALUE in) {
             throw sigrok::Error(SR_ERR_ARG);
 
         std::map<const sigrok::ConfigKey *, Glib::VariantBase> options;
-        rb_hash_foreach(kwargs, (int (*)(ANYARGS))convert_option_by_key, (VALUE)&options);
+        rb_hash_foreach(kwargs, (int (*)(VALUE, VALUE, VALUE))convert_option_by_key, (VALUE)&options);
 
         return $self->scan(options);
     }

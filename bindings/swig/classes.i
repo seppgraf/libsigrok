@@ -33,6 +33,7 @@ static int swig_exception_code(int sigrok_exception_code) {
         default:
             return SWIG_RuntimeError;
     }
+#include <memory>
 }
 
 %}
