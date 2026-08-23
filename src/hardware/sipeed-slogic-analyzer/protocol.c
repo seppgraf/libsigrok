@@ -147,7 +147,6 @@ static int handle_events(int fd, int revents, void *cb_data)
 
     if (devc->acq_aborted) {
         if (devc->num_transfers_used > 0) {
-            /* Gently issue async cancellations without breaking tracker allocations mid-flight */
             for (size_t i = 0; i < NUM_MAX_TRANSFERS; ++i) {
                 struct libusb_transfer *transfer = devc->transfers[i];
                 if (transfer) {
@@ -155,7 +154,6 @@ static int handle_events(int fd, int revents, void *cb_data)
                 }
             }
         } else {
-            /* No more hardware context threads remain alive: secure to teardown core allocations */
             if (devc->raw_data_queue) {
                 g_async_queue_push(devc->raw_data_queue, SHUTDOWN_MARKER);
             }
@@ -176,6 +174,13 @@ static int handle_events(int fd, int revents, void *cb_data)
                 }
                 g_async_queue_unref(devc->raw_data_queue);
                 devc->raw_data_queue = NULL;
+            }
+
+            /* FIX: Send DF_FRAME_END and DF_END if they weren't dispatched by sample limit */
+            if (!devc->df_end_sent) {
+                std_session_send_df_frame_end(sdi);
+                std_session_send_df_end(sdi);
+                devc->df_end_sent = TRUE;
             }
 
             sr_session_source_remove(sdi->session, -1 * (size_t)drvc->sr_ctx->libusb_ctx);
@@ -211,8 +216,23 @@ static gpointer raw_data_handle_thread_func(gpointer user_data)
         }
     }
 
-    std_session_send_df_end(sdi);
     return NULL;
+}
+
+static void drain_stale_ep(const struct sr_dev_inst *sdi)
+{
+    struct dev_context *devc = sdi->priv;
+    struct sr_usb_dev_inst *usb = sdi->conn;
+    uint8_t dummy[512];
+    int actual_len = 0;
+
+    if (!usb || !usb->devhdl)
+        return;
+
+    /* Drain any leftover bytes from hardware FIFO (50ms timeout) */
+    libusb_bulk_transfer(usb->devhdl, devc->model->ep_in,
+                         dummy, sizeof(dummy),
+                         &actual_len, 50);
 }
 
 SR_PRIV int sipeed_slogic_acquisition_start(const struct sr_dev_inst *sdi)
@@ -228,12 +248,15 @@ SR_PRIV int sipeed_slogic_acquisition_start(const struct sr_dev_inst *sdi)
     drvc = sdi->driver->context;
     usb = sdi->conn;
     devc->num_samples = 0;
-    /* DRAIN ENDPOINT BEFORE STARTING A NEW RUN */
-    clear_ep(sdi);
 
     if ((ret = devc->model->operation.remote_stop(sdi)) < 0) {
         sr_err("Unhandled `CMD_STOP`");
         return ret;
+    }
+
+    /* Clear lingering endpoint bytes for Lite 8 */
+    if (devc->model->pid == 0x0300) {
+        drain_stale_ep(sdi);
     }
 
     for (l = sdi->channels; l; l = l->next) {
@@ -263,9 +286,17 @@ SR_PRIV int sipeed_slogic_acquisition_start(const struct sr_dev_inst *sdi)
 
     devc->per_transfer_duration = 40;
     devc->per_transfer_nbytes = devc->per_transfer_duration * devc->cur_samplerate * devc->cur_samplechannel / 8 / SR_KHZ(1);
-    devc->per_transfer_nbytes = (devc->per_transfer_nbytes + (2 * 16 * 1024 - 1)) & ~(2 * 16 * 1024 - 1);
+    
+    /* Align to 16KB boundary */
+    devc->per_transfer_nbytes = (devc->per_transfer_nbytes + (16 * 1024 - 1)) & ~(16 * 1024 - 1);
+
+    /* Cap maximum buffer size to 128 KB to prevent USB controller memory exhaustion */
+    if (devc->per_transfer_nbytes > (128 * 1024) || devc->per_transfer_nbytes == 0) {
+        devc->per_transfer_nbytes = 128 * 1024;
+    }
 
     devc->acq_aborted = 0;
+    devc->df_end_sent = FALSE;
     devc->num_transfers_used = 0;
     devc->num_transfers_completed = 0;
     memset(devc->transfers, 0, sizeof(devc->transfers));
@@ -349,13 +380,86 @@ SR_PRIV int sipeed_slogic_acquisition_start(const struct sr_dev_inst *sdi)
 SR_PRIV int sipeed_slogic_acquisition_stop(struct sr_dev_inst *sdi)
 {
     struct dev_context *devc = sdi->priv;
+    struct drv_context *drvc;
+    uint64_t i;
+
+    if (!devc)
+        return SR_OK;
+
+    drvc = sdi->driver->context;
 
     devc->trigger_fired = FALSE;
     devc->acq_aborted = 1;
 
+    /* 1. Unblock processing thread immediately */
     if (devc->raw_data_queue) {
         g_async_queue_push(devc->raw_data_queue, SHUTDOWN_MARKER);
     }
 
+    /* 2. Stop hardware capture on MCU */
+    if (devc->model && devc->model->operation.remote_stop) {
+        devc->model->operation.remote_stop(sdi);
+    }
+
+    /* 3. Cancel active transfers */
+    for (i = 0; i < NUM_MAX_TRANSFERS; i++) {
+        if (devc->transfers[i]) {
+            libusb_cancel_transfer(devc->transfers[i]);
+        }
+    }
+
+    /* 4. Drain all cancelled libusb transfer callbacks completely */
+    if (drvc && drvc->sr_ctx && drvc->sr_ctx->libusb_ctx) {
+        int timeout_guard = 100; /* Max 1 second wait */
+        while (devc->num_transfers_used > 0 && timeout_guard-- > 0) {
+            struct timeval tv = {0, 10000}; /* 10ms */
+            libusb_handle_events_timeout_completed(drvc->sr_ctx->libusb_ctx, &tv, NULL);
+        }
+    }
+
+    /* 5. Remove session source */
+    if (drvc && drvc->sr_ctx) {
+        sr_session_source_remove(sdi->session, -1 * (size_t)drvc->sr_ctx->libusb_ctx);
+    }
+
+    /* 6. Join processing thread and clean queue */
+    if (devc->raw_data_handle_thread) {
+        g_thread_join(devc->raw_data_handle_thread);
+        devc->raw_data_handle_thread = NULL;
+    }
+
+    if (devc->raw_data_queue) {
+        gpointer xfer;
+        while ((xfer = g_async_queue_try_pop(devc->raw_data_queue)) != NULL) {
+            if (xfer != SHUTDOWN_MARKER) {
+                struct raw_packet_chunk *chunk = (struct raw_packet_chunk *)xfer;
+                g_free(chunk->data);
+                g_free(chunk);
+            }
+        }
+        g_async_queue_unref(devc->raw_data_queue);
+        devc->raw_data_queue = NULL;
+    }
+
+    /* 7. Dispatch session termination packets once to PulseView UI */
+    std_session_send_df_frame_end(sdi);
+    std_session_send_df_end(sdi);
+
     return SR_OK;
 }
+
+// static void flush_stale_bulk_data(const struct sr_dev_inst *sdi)
+// {
+//     struct dev_context *devc = sdi->priv;
+//     struct sr_usb_dev_inst *usb = sdi->conn;
+//     uint8_t dummy_buf[512];
+//     int actual_len = 0;
+
+//     if (!usb || !usb->devhdl)
+//         return;
+
+//     /* Non-blocking read to flush stale packets sitting in hardware FIFO */
+//     libusb_bulk_transfer(usb->devhdl, devc->model->ep_in,
+//                          dummy_buf, sizeof(dummy_buf),
+//                          &actual_len, 50);
+// }

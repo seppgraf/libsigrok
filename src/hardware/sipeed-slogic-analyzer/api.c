@@ -578,18 +578,23 @@ static void slogic_submit_raw_data(void *data, size_t len, const struct sr_dev_i
     if (nCh < 8)
         g_free(ptr);
 
-    // Track and enforce sample limits for large acquisitions (like 50M)
+    // Track and enforce sample limits for large acquisitions
     if (devc->cur_limit_samples > 0) {
-        // Handle unitsize differences: 16 channels uses 2 bytes per sample point
-        size_t samples_received = (nCh <= 8) ? len : (len / 2);
+        size_t unitsize = (nCh <= 8) ? 1 : 2;
+        size_t samples_received = len / unitsize;
         devc->num_samples += samples_received;
         
         if (devc->num_samples >= devc->cur_limit_samples) {
             sr_info("Target sample depth of %" PRIu64 " reached. Stopping acquisition.", devc->cur_limit_samples);
             
-            // Unlock before calling stop to prevent recursive deadlocks if stop clears the mutex
+            if (!devc->df_end_sent) {
+                std_session_send_df_frame_end(sdi);
+                std_session_send_df_end(sdi);
+                devc->df_end_sent = TRUE;
+            }
+
+            devc->acq_aborted = 1;
             g_mutex_unlock(&devc->mutex);
-            sr_dev_acquisition_stop((struct sr_dev_inst *)sdi);
             return;
         }
     }
@@ -615,26 +620,22 @@ struct cmd_start_acquisition {
 
 static int slogic_lite_8_remote_run(const struct sr_dev_inst *sdi) {
     struct dev_context *devc = sdi->priv;
-    struct sr_usb_dev_inst *usb = sdi->conn;
-
-    /* Reset pipe halt state on the bulk IN endpoint before sending run command */
-    if (usb && usb->devhdl) {
-        libusb_clear_halt(usb->devhdl, devc->model->ep_in);
-    }
 
     const struct cmd_start_acquisition cmd_run = {
         .sample_rate = devc->cur_samplerate / SR_MHZ(1),
         .sample_channel = devc->cur_samplechannel,
     };
 
-    g_usleep(20000); /* 20ms settling delay for Lite 8 MCU */
+    g_usleep(10000); /* 10ms settling delay */
 
     return slogic_usb_control_write(sdi, CMD_START, 0x0000, 0x0000, (uint8_t *)&cmd_run, sizeof(cmd_run), 1000);
 }
 
 static int slogic_lite_8_remote_stop(const struct sr_dev_inst *sdi) {
     uint8_t dummy = 0;
-    slogic_usb_control_write(sdi, CMD_STOP, 0x0000, 0x0000, &dummy, 1, 500);
+    /* Send CMD_STOP with timeout to reset MCU state */
+    slogic_usb_control_write(sdi, CMD_STOP, 0x0000, 0x0000, &dummy, 0, 500);
+    g_usleep(30000); /* Give MCU 30ms to exit sampling loop */
     return SR_OK;
 }
 

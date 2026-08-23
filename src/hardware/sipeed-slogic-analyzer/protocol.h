@@ -58,57 +58,58 @@ struct raw_packet_chunk {
 };
 
 struct dev_context {
-	struct slogic_model *model;
+    struct slogic_model *model;
 
-	struct sr_channel_group *digital_group;
+    struct sr_channel_group *digital_group;
 
-	struct {
-		uint64_t limit_samplerate;
-		uint64_t limit_samplechannel;
-	};
+    struct {
+        uint64_t limit_samplerate;
+        uint64_t limit_samplechannel;
+    };
 
-	struct {
-		uint64_t cur_limit_samples;
-		uint64_t cur_samplerate;
-		uint64_t cur_samplechannel;
-		int64_t cur_pattern_mode_idx;
-		size_t cur_threshold_idx;
-		uint64_t num_samples;
-	}; // configuration
-	
-	struct {
-		enum libusb_speed speed;
+    struct {
+        uint64_t cur_limit_samples;
+        uint64_t cur_samplerate;
+        uint64_t cur_samplechannel;
+        int64_t cur_pattern_mode_idx;
+        size_t cur_threshold_idx;
+        uint64_t num_samples;
+    }; // configuration
+    
+    struct {
+        enum libusb_speed speed;
 
-		uint64_t samples_need_nbytes;
-		uint64_t samples_got_nbytes;
+        uint64_t samples_need_nbytes;
+        uint64_t samples_got_nbytes;
 
-		uint64_t per_transfer_duration; /* unit: ms */
-		uint64_t per_transfer_nbytes;
+        uint64_t per_transfer_duration; /* unit: ms */
+        uint64_t per_transfer_nbytes;
 
-		size_t num_transfers_completed;
-		size_t num_transfers_used;
-		struct libusb_transfer *transfers[NUM_MAX_TRANSFERS];
+        size_t num_transfers_completed;
+        size_t num_transfers_used;
+        struct libusb_transfer *transfers[NUM_MAX_TRANSFERS];
 
-		uint64_t transfers_reached_nbytes; /* real received bytes in all */
-		uint64_t transfers_reached_nbytes_latest; /* real received bytes this transfer */
-		int64_t transfers_reached_time_start;
-		int64_t transfers_reached_time_latest;
+        uint64_t transfers_reached_nbytes; /* real received bytes in all */
+        uint64_t transfers_reached_nbytes_latest; /* real received bytes this transfer */
+        int64_t transfers_reached_time_start;
+        int64_t transfers_reached_time_latest;
 
-		GThread *raw_data_handle_thread;
-		GAsyncQueue *raw_data_queue;
-		uint64_t timeout_count;
-		GMutex mutex;
-	}; // usb
+        GThread *raw_data_handle_thread;
+        GAsyncQueue *raw_data_queue;
+        uint64_t timeout_count;
+        GMutex mutex;
+    }; // usb
 
-	int acq_aborted;
+    int acq_aborted;
+    gboolean df_end_sent; /* Flag to track if end packets were dispatched */
 
-	/* Triggers */
-	uint64_t capture_ratio;
-	gboolean trigger_fired;
-	struct soft_trigger_logic *stl;
+    /* Triggers */
+    uint64_t capture_ratio;
+    gboolean trigger_fired;
+    struct soft_trigger_logic *stl;
 
-	double voltage_threshold[2];
-	double cur_voltage_threshold;
+    double voltage_threshold[2];
+    double cur_voltage_threshold;
 };
 
 SR_PRIV int sipeed_slogic_acquisition_start(const struct sr_dev_inst *sdi);
