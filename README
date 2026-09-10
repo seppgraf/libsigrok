@@ -105,6 +105,11 @@ In order to get the libsigrok source code and build it, run:
  $ ./configure
  $ make
 
+For containerized builds, see BUILDING_DEVCONTAINER.md. The repository
+includes both a native Linux devcontainer and a dedicated
+`.devcontainer/aarch64-cross` configuration for cross-compiling to Raspberry Pi
+AArch64 targets.
+
 
 With OpenJDK:
 Wipe out everything to destroy cached configure variables
@@ -177,4 +182,3 @@ Website
 -------
 
  http://sigrok.org/wiki/Libsigrok
-
