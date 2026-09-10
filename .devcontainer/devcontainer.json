@@ -1,0 +1,14 @@
+{
+	"name": "libsigrok (Linux build)",
+	"build": {
+		"dockerfile": "Dockerfile"
+	},
+	"customizations": {
+		"vscode": {
+			"extensions": [
+				"ms-vscode.cpptools"
+			]
+		}
+	},
+	"postCreateCommand": "git config --global --add safe.directory ${containerWorkspaceFolder}"
+}
