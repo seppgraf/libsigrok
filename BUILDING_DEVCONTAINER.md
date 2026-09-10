@@ -1,9 +1,10 @@
-# Building libsigrok for Linux in the devcontainer
+# Building libsigrok in the devcontainer
 
-This tutorial walks through building libsigrok from source for Linux using
-the repository's devcontainer. The devcontainer provides a ready-to-use
-Ubuntu environment with all the tools and libraries required to build
-libsigrok, so you don't have to install anything on your host machine.
+This tutorial walks through building libsigrok from source in the
+repository's devcontainer. The repository provides a ready-to-use Ubuntu
+environment for both native Linux builds and AArch64 cross-compilation for
+Raspberry Pi targets, so you don't have to install the toolchain on your host
+machine.
 
 ## Prerequisites
 
@@ -16,23 +17,33 @@ libsigrok, so you don't have to install anything on your host machine.
 - Alternatively, a [GitHub Codespace](https://github.com/features/codespaces)
   can be used instead of a local Docker install
 
-The container image is defined in `.devcontainer/Dockerfile` and already
-includes the full set of packages listed in the `README` file under
+The native Linux container image is defined in `.devcontainer/Dockerfile` and
+already includes the full set of packages listed in the `README` file under
 "Requirements for the C library", such as `gcc`/`g++`, `autoconf`,
 `automake`, `libtool`, `pkg-config`, `libglib2.0-dev`, `libzip-dev`,
 `libusb-1.0-0-dev`, `libftdi1-dev`, `libhidapi-dev`, `check`, `doxygen` and
 `graphviz`.
 
+For Raspberry Pi AArch64 cross-compilation, use the dedicated configuration in
+`.devcontainer/aarch64-cross`, which adds the `aarch64-linux-gnu` cross
+toolchain plus the ARM64 target `-dev` packages needed by libsigrok.
+
 ## 1. Open the repository in the devcontainer
+
+Choose one of these devcontainer configurations:
+
+- `.devcontainer/devcontainer.json` for a native Linux build.
+- `.devcontainer/aarch64-cross/devcontainer.json` for an AArch64
+  cross-compilation build that targets 64-bit Raspberry Pi Linux systems.
 
 ### Using VS Code
 
 1. Open the cloned `libsigrok` folder in VS Code.
-2. When prompted, click **Reopen in Container**. If you are not prompted,
-   open the Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`) and run
-   **Dev Containers: Reopen in Container**.
-3. VS Code will build the image described in `.devcontainer/Dockerfile` (this
-   can take a few minutes the first time) and open a terminal inside the
+2. If VS Code offers multiple devcontainer configurations, select the one you
+   want to use. Otherwise, open the Command Palette
+   (`Ctrl+Shift+P` / `Cmd+Shift+P`) and run **Dev Containers: Reopen in
+   Container**.
+3. VS Code will build the selected image and open a terminal inside the
    running container with the repository mounted at `/workspaces/libsigrok`.
 
 ### Using GitHub Codespaces
@@ -44,12 +55,23 @@ includes the full set of packages listed in the `README` file under
 
 ### Using the Dev Container CLI
 
+Native build:
+
 ```
 $ devcontainer up --workspace-folder .
 $ devcontainer exec --workspace-folder . bash
 ```
 
-## 2. Build libsigrok
+AArch64 cross-build:
+
+```
+$ devcontainer up --workspace-folder . \
+    --config .devcontainer/aarch64-cross/devcontainer.json
+$ devcontainer exec --workspace-folder . \
+    --config .devcontainer/aarch64-cross/devcontainer.json bash
+```
+
+## 2. Build libsigrok natively
 
 Once you have a shell inside the devcontainer, build libsigrok the same way
 you would on any Linux machine:
@@ -75,7 +97,28 @@ build, for example:
 $ ./configure --with-udevrulesdir=/etc/udev/rules.d
 ```
 
-## 3. Verify the build
+## 3. Cross-compile libsigrok for Raspberry Pi AArch64
+
+Once you have a shell inside the `.devcontainer/aarch64-cross` container, use
+the AArch64 host triplet when running `configure`:
+
+```
+$ ./autogen.sh
+$ ./configure --host=aarch64-linux-gnu --disable-bindings
+$ make
+```
+
+- The cross-build devcontainer already exports the `aarch64-linux-gnu`
+  compiler, binutils, and target `pkg-config` search path.
+- `--disable-bindings` keeps the build focused on the core C library and avoids
+  cross-compilation issues with optional language bindings, which are enabled
+  by default.
+- If you need a specific driver and `./configure` reports a missing dependency,
+  install the matching ARM64 `-dev` package in
+  `.devcontainer/aarch64-cross/Dockerfile` or disable the corresponding
+  optional driver.
+
+## 4. Verify the build
 
 To confirm the shared library was built successfully:
 
@@ -83,14 +126,21 @@ To confirm the shared library was built successfully:
 $ file src/.libs/libsigrok.so*
 ```
 
-If the optional `check` unit-testing framework dependency is present (it is
-installed in the devcontainer image), you can also run the test suite:
+For the cross-build container, `file` should report an `ELF 64-bit` binary for
+`ARM aarch64`.
+
+For the native Linux devcontainer, the optional `check` unit-testing framework
+is installed, so you can also run the test suite:
 
 ```
 $ make check
 ```
 
-## 4. Install (optional)
+For the AArch64 cross-build devcontainer, `make check` is not expected to work
+unless you add target emulation separately, because the test binaries are built
+for ARM64 rather than the container's native CPU.
+
+## 5. Install (optional)
 
 To install the built library and headers into the container's filesystem:
 
@@ -107,6 +157,8 @@ host machine.
   corresponding `-dev` package is listed in `.devcontainer/Dockerfile` and
   rebuild the container image (**Dev Containers: Rebuild Container** in
   VS Code).
+- For the Raspberry Pi cross-build devcontainer, check the package list in
+  `.devcontainer/aarch64-cross/Dockerfile` instead.
 - See the main `README` file for the full list of dependencies and optional
   features, and `http://sigrok.org/wiki/Building` for further
   platform-specific notes and a build FAQ.

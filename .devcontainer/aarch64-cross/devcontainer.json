@@ -1,0 +1,24 @@
+{
+	"name": "libsigrok (AArch64 cross-build)",
+	"build": {
+		"dockerfile": "Dockerfile"
+	},
+	"containerEnv": {
+		"CC": "aarch64-linux-gnu-gcc",
+		"CXX": "aarch64-linux-gnu-g++",
+		"AR": "aarch64-linux-gnu-ar",
+		"RANLIB": "aarch64-linux-gnu-ranlib",
+		"STRIP": "aarch64-linux-gnu-strip",
+		"PKG_CONFIG_LIBDIR": "/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/share/pkgconfig",
+		"PKG_CONFIG_PATH": "",
+		"PKG_CONFIG_SYSROOT_DIR": "/"
+	},
+	"customizations": {
+		"vscode": {
+			"extensions": [
+				"ms-vscode.cpptools"
+			]
+		}
+	},
+	"postCreateCommand": "git config --global --add safe.directory ${containerWorkspaceFolder}"
+}
